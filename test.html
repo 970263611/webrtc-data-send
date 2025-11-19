@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+<body>
+    <button onclick="connect()">连接服务器</button>
+    <button onclick="sendData()">发送数据到服务器</button>
+    <div id="log"></div>
+
+    <script>
+        let pc;
+        let dataChannel;
+        let socket;
+
+        function log(msg) {
+            document.getElementById('log').innerHTML += `<p>${new Date().toLocaleTimeString()}: ${msg}</p>`;
+        }
+
+        function connect() {
+            // 连接Netty服务器
+            socket = new WebSocket('ws://localhost:8080/webrtc');
+            
+            socket.onopen = () => {
+                log('WebSocket连接成功，发送加入请求');
+                socket.send(JSON.stringify({ type: 'join' }));
+            };
+            
+            socket.onmessage = (e) => {
+                const signal = JSON.parse(e.data);
+                log(`收到服务器信令: ${JSON.stringify(signal)}`);
+                handleSignal(signal);
+            };
+        }
+
+        function handleSignal(signal) {
+            switch (signal.type) {
+                case 'join-ack':
+                    // 收到加入确认，创建P2P连接
+                    initPeerConnection();
+                    break;
+                case 'answer':
+                    // 收到服务器的answer，设置远程描述
+                    pc.setRemoteDescription(new RTCSessionDescription({
+                        type: 'answer',
+                        sdp: signal.sdp
+                    }));
+                    break;
+                case 'ice-candidate':
+                    // 收到服务器的ICE候选者
+                    pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+                    break;
+            }
+        }
+
+        function initPeerConnection() {
+            const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+            pc = new RTCPeerConnection(config);
+            
+            // 监听ICE候选者，发送给服务器
+            pc.onicecandidate = (e) => {
+                if (e.candidate) {
+                    socket.send(JSON.stringify({
+                        type: 'ice-candidate',
+                        candidate: e.candidate
+                    }));
+                }
+            };
+            
+            // 创建数据通道
+            dataChannel = pc.createDataChannel('server-channel');
+            dataChannel.onopen = () => log('前端DataChannel已打开');
+            dataChannel.onmessage = (e) => {
+                log(`收到服务器数据: ${e.data}`);
+            };
+            
+            // 创建offer并发送给服务器
+            pc.createOffer()
+              .then(offer => pc.setLocalDescription(offer))
+              .then(() => {
+                  socket.send(JSON.stringify({
+                      type: 'offer',
+                      sdp: pc.localDescription.sdp
+                  }));
+              });
+        }
+
+        function sendData() {
+            if (dataChannel && dataChannel.readyState === 'open') {
+                const data = { type: 'client-msg', content: 'Hello Server!' };
+                dataChannel.send(JSON.stringify(data));
+                log(`发送数据到服务器: ${JSON.stringify(data)}`);
+            }
+        }
+    </script>
+</body>
+</html>
